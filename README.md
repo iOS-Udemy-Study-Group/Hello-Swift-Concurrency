@@ -16,8 +16,8 @@ Udemy Study for Swift Concurrency
 
 ### 1주차 스터디 
 
-- 
-- 
+- 3/26(일), 오후 1시 ~ 3시
+- Section 1: Introduction ~ 
 - 👩🏻‍💻
 
 <br>
