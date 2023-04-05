@@ -194,3 +194,178 @@ func getPosts() async throws -> [Post] {
 	}
 }
 ~~~
+
+
+
+## Section 7: Project  Time: News App
+
+News App 초기상태는 async await, continiuation 등의 Concurrency를 사용하지 않은 버전입니다. @escaping closure 등으로 콜백 이벤트를 처리할 수도 있지만, 콜백 지옥을 야기하거나, 콜백 클로져 실행 후 특정 분기 return을 놓치면 비정상 동작을 할 수 있는 단점이 있습니다.
+
+이제 이 앱에 async/await, continuation, mainActor 등의 개념을 적용해 봅시다!
+
+async/await, continuation, @MainActor 등의 개념들은 URLSession, Notification, HealthKit, CoreData 등 다양한 곳에서 활용 가능하다
+
+
+
+## Section 8: Understanding Structured Concurrency in Swift
+
+##### 👩🏻‍💻 learning point : Structured Concurrency, Async Let, Task Group, Unstructured Tasks, Detached Tasks, Task Cancellation
+
+### async-let Tasks
+
+~~~swift
+// try await을 사용하였기에 equifaxUrl로부터 결과 값을 수신받을때까지 suspend 된다. ㅠㅠ equifaxUrl 요청이 끝나야 experianUrl로부터 요청을 수행한다..
+  // => Concurrently하게 두개 다 요청하는 방법?
+  // "Let's work on these two tasks(equifax, experian) concurrently!!"
+  // => then, how do we do that?? => async let!
+  // MARK: Async-let
+  // - async let을 사용하면, async 작업에 대한 reference를 잡고 있는다. 즉시 반환되며, concurrent task로 동작하게 된다.
+  // - async let을 붙였다면 뒤에 붙여 사용했던 try await은 명시하지 않아도 된다.(ex) 아래 코드의 URLSession 앞에 try await를 명시할 의무가 없음
+  // * 아래 equifaxData, experianData는 모두 async let으로 정의된다.
+  async let (equifaxData, _) = URLSession.shared.data(from: equifaxUrl)
+  async let (experianData, _) = URLSession.shared.data(from: experianUrl)
+  
+  // custom code
+  // async throws 메서드로부터 async let 상수를 받은 것이므로, 이를 사용할때는 try await을 사용해야 한다.
+  // 아래와 같이 async let 값에 대한 await(try await)을 할때 비로소 suspend 된다! 따라서 async task는 동시에 동작시키고, 이후에 실제 값을 받는 부분에서 기다리는 것 => API 요청은 concurrently하게 하고, 받은 값을 feeding할때만 순차적으로 나눠줌.
+  let equifaxCreditScore = try? JSONDecoder().decode(CreditScore.self, from: try await equifaxData)
+  let experianCreditScore = try? JSONDecoder().decode(CreditScore.self, from: try await experianData)
+~~~
+
+
+
+### async-let Tasks in loop (언제 Concurrent하게, Serial하게 동작하는가)
+
+~~~ swift
+let ids = [1, 2, 3, 4, 5]
+Task {
+  for id in ids {
+    // * 아래와 같이 loop문에서 async/await을 사용할 수 있는데 알아두어야 할 점
+    // 1) loop 문이 한번 돌 때, getAPR 내의 async let task들이 concurrent 하게 수행된다.
+    // 2) task는 concurrent 하게 동작하지만, 결국 feeding 단계에서 suspending이 된다.
+    // 3) 두개의 task가 전부 끝나고, feeding까지 끝나면, 비로소 loop의 다음 getAPR를 수행한다. (결국 각 getAPR 메서드 내에서 await하는 라인이 있기 때문에 suspend하긴 함. API 요청이 concurrent 할 뿐.)
+    // => loop를 사용한다고, 모든 getAPR 동작들이 concurrent하게 동작하는것이 아니라는 점을 알아야 한다. (task group을 활용하면 이 또한 concurrent 하게 동작은 가능 함.)
+    // task group을 살펴 보기 전에 먼저 중요한 요소 중 하나인 cancelling a task 를 알아보자.
+    let apr = try await getAPR(userId: id)
+    print(apr)
+  }
+}
+~~~
+
+
+
+### Cancelling a Task, Task.checkCancellation()
+
+~~~swift
+let ids = [1, 2, 3, 4, 5]
+var invalidIds: [Int] = []
+Task {
+  for id in ids {
+    do {
+      // Task.checkCancellation()을 사용하면, 에러가 throwing되어도 이후의 loop task를 멈추지 않고 지속 수행할 수 있다.
+      try Task.checkCancellation()
+      let apr = try await getAPR(userId: id)
+      print(apr)
+    } catch {
+      print(error)
+      invalidIds.append(id)
+    }
+  }
+  
+  // error가 발생한 id를 출력 => invalidIdList : 2 4
+  print("invalidIdList : \(invalidIds.map { String($0) }.joined(separator: " "))")
+}
+~~~
+
+
+
+### Group Tasks
+
+##### - withTaskGroup, withThrowingTaskGroup (group.addTask { ... })
+
+~~~swift
+// MARK: 41. Group Tasks
+// async let 을 loop문에서 사용하면 lopp 내 각각의 task 내에서 API 요청은 concurrent 하게 동작하지만 결국 feeding 과정에서 suspend 되고, 이를 기다리는 것을 알 수 있었다.
+// => 루프 내 각각의 task를 모두 concurrent하게 동작하고 싶다면? => task groups를 사용하면 된다.
+
+// getAPR은 각각 2개의 API 요청을 concurrent하게 진행함
+// [Main Task] -> first Group (getAPR) -> two tasks concurrently
+//             -> second Group (getAPR) -> two tasks concurrently
+//             -> ..... (getAPR) -> two tasks concurrently
+
+let ids = [1, 2, 3, 4, 5]
+var invalidIds: [Int] = []
+func getAPRForAllUsers(ids: [Int]) async throws -> [Int: Double] {
+  var userAPR: [Int: Double] = [:]
+  
+  // 1) loop 내 작업들을 concurrent하게 동작하기 위해 for loop 바깥에 try await withThrowingTaskGroup을 사용할 수 있다.
+  // - of: group에 추가할 task 결과 타입
+  // - body: group task가 수행될 클로져를 정의
+  try await withThrowingTaskGroup(of: (Int, Double).self, body: { group in
+    for id in ids {
+      // 2) group.addTask { ... } 내에 concurrently하게 동작시킬 작업을 정의, 결과는 위에서 정의한 (Int, Double) 튜플타입으로 반환
+      group.addTask {
+        // 해당 블럭에서는 task 블럭 밖의 값은 변경할 수 없다 getAPR의 결과를 튜플방식으로 group task로 추가한다.
+        // loop가 one by one으로 동작이 되기 때문에 dataRacing을 발생할 걱정도 없다.
+        // 여기의 작업은 loop 내 각각의 task 중 어떤게 가장 먼저 완료될 지 알 수 없어요. concurrent하게 동작하기 때문에!
+        return (id, try await getAPR(userId: id))
+      }
+    }
+    
+    // 3) group에 추가된 task들을 async하게 차례대로 작업한다. 여기에서 loop 내부 각 task들은 순차적으로 동작하여 data racing 걱정 없다.
+    for try await (id, apr) in group {
+      // loop문에서 각 task 결과에 대한 addTask를 수행하ㅗ for try await loop에서 비로소 딕셔너리에 셋팅이 가능했다. (여기는 addTask 블럭 내부가 아니므로, 외부 값 변경이 가능
+      userAPR[id] = apr
+    }
+  })
+
+  return userAPR
+}
+
+Task {
+  let userAPRs = try await getAPRForAllUsers(ids: ids)
+  print(userAPRs)
+}
+~~~
+
+
+
+### Additional Task Group Example
+
+##### getting random images concurrently and asynchronously, and awaiting after that time.
+
+~~~swift
+// task group을 사용해서 loop 내의 각 image 요청을 모두 concurrent하게 수행하도록 해보자.
+  func getRandomImages(ids: [Int]) async throws -> [RandomImage] {
+    try await withThrowingTaskGroup(of: (Int, RandomImage).self, body: { group in
+      for id in ids {
+        // 루프내 각 task 각각 concurret task group을 만든다.
+        // task group 내의 addTask 클로져 내부에 concurrently 동작시킬 작업을 작업하고, of: 레이블에 설정한 타입에 맞게 결과를 반환한다.
+        group.addTask {
+          let randomImage = try await self.getRandomImage(id: id)
+          return (id, randomImage)
+        }
+      }
+      
+      // group에 추가했던 task들을 순차적으로 suspending하여 결과값을 randomImages에 appending한다.
+      // => 모든 getRandomImage 요청들은 concurrently 동작을 한다. 이후 아래 for try await loop에서 suspending을 하며, 수신한 값을 순차적으로 randomImages에 추가한다.
+      // => task group을 사용하지 않았을때 : loop의 각 task 내부 동작은 async하지만, 각 getRandomImage 결과값을 얻기 전까지 suspending되어 루프 다음 task(getRandomImage)를 동시에 수행하지 못했음.
+      // => task group을 사용했을때 : loop의 각 task는 concurrently, asynchronous 하게 동작한다. suspending은 for try await loop에서 발생한다.
+      for try await (_, randomImage) in group {
+        self.randomImages.append(randomImage)
+      }
+    })
+    
+    return randomImages
+  }
+~~~
+
+
+
+## Section 9: Project Time - Random Images and Random Quotes
+
+아래와 같은 요소를 활용하여 randomImage API 요청을 concurrent하게 요청할 수 있다.
+
+- ##### structured concurrency : async let
+
+  - 다수의 API 요청을 concurrent하게 수행하고, feeding 단계(await 사용 위치)에서 suspend하여 순차적으로 feeding을 할 수 있다.
