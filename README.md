@@ -36,7 +36,6 @@ Udemy Study for Swift Concurrency
 <br>
 
 
-
 ## Concurrency
 
 Concurrency란, 동시에 다수의 작업을 진행하는 것.
@@ -367,7 +366,7 @@ Task {
   }
 ~~~
 
-
+<br>
 
 ## Section 9: Project Time - Random Images and Random Quotes
 
@@ -376,3 +375,554 @@ Task {
 - ##### structured concurrency : async let
 
   - 다수의 API 요청을 concurrent하게 수행하고, feeding 단계(await 사용 위치)에서 suspend하여 순차적으로 feeding을 할 수 있다.
+
+- ##### unstructured concurrency : Task { ... }
+
+  - 가장 앞 단에서 await 동작을 수행하기 위해서는 Task 블럭 내부에서 요청한다. 혹은, View의 onAppear 이벤트 시 await 동작을 수행하고자 한다면, .task { ... } viewModifier를 사용할 수 있다.
+
+- ##### task group : withThrowingTaskGroup, withTaskGroup (group.addTask)
+
+  - 모든 loop의 Task(각각 random, quote API를 호출하는 task)들을 concurrent하게 동작시킬때 사용할 수 있다.
+  - withThrowingTaskGroup, withTaskGroup 내에서 concurrent하게 동작해야할 코드를 작성 후(addTask), 그 다음 for await - in loop / for try await - in loop 문 내에서 요청 결과를 순차적으로 feeding 할 수 있다.
+
+- ##### @MainActor
+
+  - @MainActor를 지정한 영역은 항상 메인스레드에서의 동작이 보장되므로 내부에 추가적으로 DispatchQueue.main.async { ... }, MainActor.run { ... } 와 같은 thread 명시를 할 필요가 없다.
+
+- ##### Section 9 예제 앱 동작 결과 (concurrent하게 random image, quote를 요청 및 수신 하여 UI 랜더링)
+
+<div> 
+  <img width=200 src="https://user-images.githubusercontent.com/4410021/197397459-fb6257d0-0b23-43e1-bb24-aee7dd6e8e43.gif">
+</div>
+
+
+<br>
+
+
+## Sesion 10: AsyncSequence
+
+- AsyncSequence Availability
+  - iOS 13.0+
+
+- Sequence protocol에 Async 성격이 추가된 것
+- Sequence와 거의 동일하다. (for loop에 사용하고 makeIterator, next를 구현한다거나, operator 사용 등... 유사)
+  - map, allSatisfy, max, prefix, compactMap, zip, flatMap, dropFirst, contains, filter, reduce 등 모두 사용 가능!
+- related posting link : https://0urtrees.tistory.com/361
+
+
+
+### AsyncSequence 가 아닌 Sequence와 async/await을 함께 사용할때 생기는 문제점
+
+~~~swift
+// MARK: - Section 10: AsyncSequence
+// MARK: Loop Over Sequence Without AsyncSequence
+// - AsyncSequence를 활용해보기에 앞서서 먼저 일반 Sequence를 사용해보자.
+
+import SwiftUI
+import PlaygroundSupport
+
+extension URL {
+  func allLines() async -> Lines {
+    Lines(url: self)
+  }
+}
+
+struct Lines: Sequence {
+  
+  let url: URL
+  
+  func makeIterator() -> some IteratorProtocol {
+    let lines = (try? String(contentsOf: url))?.split(separator: "\n") ?? []
+    return LinesIterator(lines: lines)
+  }
+}
+
+// IteratorProtocol을 conform하기 위해서는 next() 메서드를 구현해야 한다.
+struct LinesIterator: IteratorProtocol {
+  typealias Element = String
+  var lines: [String.SubSequence]
+  
+  // struct 내부 메서드에 멤버 변경이 있으므로 mutating을 명시한다.
+  mutating func next() -> Element? {
+    if lines.isEmpty {
+      return nil
+    }
+    return String(lines.removeFirst())
+  }
+}
+
+let endPointURL = URL(string: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv")!
+
+Task {
+  // Sequene에 대한 await 동작을 하고 있다. -> allLines()에서 모든 line들을 처리하고 난 이후에야 loop의 각 line이 출력된다.
+  // 아래 라인은 endPointURL.allLines()가 먼저 실행되어 모든 동작이 완료되면 -> 그때서야 iterate 하게 된다.
+  for line in await endPointURL.allLines() {
+    // endPointURL.allLines() 작업이 끝나기 전까진 아래 라인은 시작도 못한다... allLines() 작업이 매우 크다면 매우 비효율적으로 처리 될 수 있다.
+    print("line : \(line)")
+  }
+}
+
+~~~
+
+
+
+### Sequence + async/await 대신 AsyncSequene + for try await 을 사용해보자
+
+- 앞서 Sequence를 사용했을때는 모든 lines의 작업을 처리한 뒤에 뒤늦게 iterator가 돌아갔다. 이는 big pause를 발생시킨다. 
+- AsyncSequence + for try await을 사용하면 각각의 line task를 순회하면서 작업이 되기 때문에 big pause를 해결할 수 있다.  (각각의 iterator에 대한 작업이 async하게 동작, 하면 완료되는대로 그 다음 iterator에 대한 작업을 수행)
+
+~~~swift
+let endPointURL = URL(string: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv")!
+
+// Task { ... } -> unstructured concurrency
+Task {
+  // endPointURL.lines는 AsyncLineSequence<URL.AsyncBytes> 타입
+  // AsyncSequence를 사용하면 for await - in / for try await - in loop를 사용할 수 있다.
+  // Sequence를 사용했을때에는 endPointURL.allLines()에 대한 모든 작업이 끝나고 나서야 순회를 했지만....
+  // -> AsyncSequence와 for try await를 사용하면 big pauce할 필요없이 순회를 하며 각 line에 대한 try await 작업을 진행한다.
+  for try await line in endPointURL.lines {
+    print(line)
+  }
+}
+
+/*
+Task {
+  // Sequene에 대한 await 동작을 하고 있다. -> allLines()에서 모든 line들을 처리하고 난 이후에야 loop의 각 line이 출력된다.
+  // 아래 라인은 endPointURL.allLines()가 먼저 실행되어 모든 동작이 완료되면 -> 그때서야 iterate 하게 된다.
+  for line in await endPointURL.allLines() {
+    // endPointURL.allLines() 작업이 끝나기 전까진 아래 라인은 시작도 못한다... allLines() 작업이 매우 크다면 매우 비효율적으로 처리 될 수 있다.
+    print("line : \(line)")
+  }
+}
+*/
+
+~~~
+
+
+
+### Built-In-Functions using AsyncSequence
+
+- There're a lot of built-in functions using AsyncSequence
+
+~~~swift
+// MARK: 55. Built-In AsyncSequences in iOS Framework
+// - AsyncSequences를 사용하는 다양한 framework 내장 기능(Built-In-Functions)들이 있다.
+// ex) 로컬파일, URL의 byte 읽을때, NotificationCenter로부터 특정 이벤트 처리할때 등...
+
+import Foundation
+import UIKit
+import _Concurrency
+
+// txt파일을 불러와서 line을 출력
+let paths = Bundle.main.paths(forResourcesOfType: "txt", inDirectory: nil)
+let fileHandle = FileHandle(forReadingAtPath: paths[0])
+/*
+Task {
+  for try await line in fileHandle!.bytes {
+    // print async bytes
+    print(line)
+  }
+}
+*/
+
+// 이처럼 URL, local data에 대한 byte를 읽을때도 AsyncSequence를 활용할 수 있다.
+let url = URL(string: "https://www.google.com")!
+Task {
+  let (bytes, _) = try await URLSession.shared.bytes(from: url)
+  for try await byte in bytes {
+    print(byte)
+  }
+}
+
+Task {
+  let center = NotificationCenter.default
+  await center.notifications(named: UIApplication.didEnterBackgroundNotification).first {
+    guard let key = $0.userInfo?["key"] as? String else { return false }
+    return key == "SomeValue"
+  }
+}
+~~~
+
+
+
+### AsyncSequence를 알아서 만들어주는 AsyncStream, AsyncThrowingStream (Swift 5.7+)
+
+- Concurrency에서는 AsyncStream, AsyncSequence를 준수하여 비동기 Iterator를 직접 구현하지 않고도 AsyncSequence를 쉽게 작성할 수 있습니다.
+- AsyncStream의  Continuation에서  yield를 사용해서 데이터를  stream에 제공하거나, 더이상 데이터를 받지 못하는 경우,  finish를 호출합니다. 혹은 데이터 성공 여부를  yield.(with: .success()), yield.(with: .failure))로 전달할 수 있습니다.  failure로 전달할때는  AsyncThrowingStream을 사용하면 됩니다.
+- withCheckedThrowingContinuation, withCheckedContinuation은 단순, async await method으로 바꾸기 어려운 애들을 래핑해서 async await 방식으로 사용하기 위한 기능이었다면,  AsyncStream은 연속적인 비동기 동작으로  for await, for try  await 방식으로 처리하기  쉽게 AsyncStream으로 변환 시켜주는 기능
+
+- AsyncStream, for await (with AsyncStream<String>)사용 예시
+
+~~~swift
+import SwiftUI
+
+func countdown() async {
+  let counter = AsyncStream<String> { continuation in
+    var countdown = 3
+    Timer.scheduledTimer(
+      withTimeInterval: 1.0,
+      repeats: true
+    ) { timer in
+      guard countdown > 0 else {
+        timer.invalidate()
+        // .failure 이벤트도 전달하고 싶다면, AsyncStream 대신, AsyncThrowingStream을 사용해야함
+        continuation.yield(with: .success("\(Date()) bye bye!"))
+        // countdown이 모두 끝나면, continuation 종료
+        return
+      }
+      
+      // countdown 할때마다 yield로 AsyncStream에 제공할 값을 전달
+      continuation.yield("\(Date()) countdown : \(countdown)")
+      // Timer에 의해 1초마다 countdown이 1씩 감소, 0이되면 Timer 중지
+      countdown -= 1
+    }
+  }
+  // AsyncStream인 counter를 순회하며 await 작업을 진행하고 있다.
+  // 만약 AsyncThrowingStream이었다면, for try await 로 작업이 되었을 것이다.
+  for await count in counter {
+    print(count)
+  }
+}
+
+func runAsyncStreamTask() {
+  Task {
+    await countdown()
+  }
+}
+
+~~~
+
+- AsyncThrowingStream for try await (with AsyncThrowingStream<String, Error>) 사용 예시 
+
+~~~swift
+import SwiftUI
+
+enum MyError: Error {
+  case invalidCount
+}
+
+func countdown() async throws {
+  let counter = AsyncThrowingStream<String, Error> { continuation in
+    var countdown = 3
+    Timer.scheduledTimer(
+      withTimeInterval: 1.0,
+      repeats: true
+    ) { timer in
+      guard countdown > 0 else {
+        timer.invalidate()
+        // .failure 이벤트도 전달하고 싶다면, AsyncStream 대신, AsyncThrowingStream을 사용해야함
+        continuation.yield(with: .success("\(Date()) bye bye!"))
+        // countdown이 모두 끝나면, continuation 종료
+        return
+      }
+      
+      // 특정 상황에 에러를 던지고 싶을때 .failure 이벤트를 보내면 AsyncSequence에 에러이벤트가 제공된다.
+      if countdown == 1 {
+        continuation.yield(with: .failure(MyError.invalidCount))
+      }
+      // countdown 할때마다 yield로 AsyncStream에 제공할 값을 전달
+      continuation.yield("\(Date()) countdown : \(countdown)")
+      // Timer에 의해 1초마다 countdown이 1씩 감소, 0이되면 Timer 중지
+      countdown -= 1
+    }
+  }
+  // AsyncThrowingStream인 counter를 순회하며 try await 작업을 진행하고 있다.
+  for try await count in counter {
+    print(count)
+  }
+}
+
+func runAsyncThrowingStreamTask() {
+  // 마지막 Task { ... } 블럭 사용 부에서는 메서드 반환부 앞에 async, async throws를 붙히지 않는다.
+  Task {
+    do {
+      try await countdown()
+    } catch {
+      // error를 throw하지 않는 경우, 메서드에 throws 키워드 설정 안해도 됨
+      print(error.localizedDescription)
+    }
+  }
+}
+
+runAsyncThrowingStreamTask()
+~~~
+
+
+- BitcoinPriceMonitor callback들을 AsyncStream으로 AsyncSeqence화해서 처리하기
+  * TaskGroup, AsyncStream 모두 내부적으로 AsyncSequence임. 그래서 모두 for try await, for await loop에 
+  - callback stream -> AsyncSequence로 바꾸어 사용할 수 있다.
+    - 기존 Sequence를 채택한 애들이 사용가능한 다양한 연산자를 함께 활용 가능하다.
+    - Async/Await하게 동시성 프로그래밍을 할 수 있다.
+
+~~~swift
+// MARK: 56. Adapting Existing Callbacks or Handlers to AsyncSequence Using AsyncStream
+
+import UIKit
+
+class BitcoinPriceMonitor {
+  
+  var price: Double = 0.0
+  var timer: Timer?
+  var priceHandler: (Double) -> Void = { _ in }
+  
+  // Timer 설정에 #selector로 지정되기 위해서는 @objc를 붙여서 Objective-C runtime에서 소통가능하도록 해주어야 합니다.
+  @objc func getPrice() {
+    priceHandler(Double.random(in: 20000...40000))
+  }
+  
+  func startUpdating() {
+    timer = Timer.scheduledTimer(timeInterval: 1.0, target: self, selector: #selector(getPrice), userInfo: nil, repeats: true)
+  }
+  
+  func stopUpdating() {
+    timer?.invalidate()
+  }
+}
+
+/*
+let bitcoinPriceMonitor = BitcoinPriceMonitor()
+// 아래와 같은 타이머 값을 수신하는 클로져를 AsyncStream화해서 Async/Await 하게 사용할 수 있을까? -> 가능함.
+bitcoinPriceMonitor.priceHandler = {
+  print($0)
+}
+
+bitcoinPriceMonitor.startUpdating()
+*/
+
+let bitcoinPriceStream = AsyncStream(Double.self) { continuation in
+  let bitcoinPriceMonitor = BitcoinPriceMonitor()
+  bitcoinPriceMonitor.priceHandler = {
+    // AsyncSequence에 제공될 값을 전달할때 yield를 사용
+    continuation.yield($0)
+  }
+  // continuation을 통해 onTermination callback 클로져를 설정 가능
+  // continuation.onTermination = { _ in }
+  bitcoinPriceMonitor.startUpdating()
+}
+
+Task {
+  // AsyncStream을 사용할때 장점
+  // 1) 콜백 스트림들을 AsyncSequene로 변환해서 사용할 수 있는데 이때 기존 Sequence를 채택한 애들이 사용가능한 다양한 연산자를 함께 활용 가능하다.
+  // 2) Async/Await하게 동시성 프로그래밍을 할 수 있다.
+  for await bitcoinPrice in bitcoinPriceStream {
+    print(bitcoinPrice)
+  }
+}
+~~~
+
+<br>
+
+## Section 11. Concurrent Programming: Problem and Solutions
+
+### 은행 계좌 출금이 동시적으로 요청될 때 생길 수 있는 문제점
+
+- 동시적으로(using concurrent queue) 출금요청작업이 진행되면 잔고가 -(minus)가 될 수도 있음
+  - serial queue, actor 등을 사용하여 해결 가능
+
+~~~swift
+// MARK: - Section 11. Concurrent Programming: Problem and Solutions
+// MARK: 58. Problem: Bank Account Withdraw (은행 계좌 출금 문제)
+// MARK: 59. Solutiion 1: Bank Account Withdraw Using Serial Queue
+  
+import UIKit
+
+class BankAccount {
+  var balance: Double
+  
+  init(balance: Double) {
+    self.balance = balance
+  }
+  
+  func withdraw(_ amount: Double) {
+    if balance >= amount {
+      let processingTime = UInt32.random(in: 0...3) // 처리 시간은 1 ~ 3초로 동작
+      print("[withdraw] Processing for \(amount) \(processingTime) seconds")
+      sleep(processingTime) // 3초 후 amount만큼 출금을 시도
+      print("withdrawing \(amount) from account")
+      balance -= amount
+      print("Balance is \(balance)")
+    }
+  }
+}
+
+// Q. 만약 동시에 많은 요청이 오게 된다면??
+
+let bankAccount = BankAccount(balance: 500)
+let queue = DispatchQueue(label: "ConcurrentQueue", attributes: .concurrent)
+
+queue.async {
+  bankAccount.withdraw(300)
+}
+
+queue.async {
+  bankAccount.withdraw(500)
+}
+
+// concurrent 하게 다수의 출금 요청을 실행 시 잔고가 -가 되는 상황이 발생!!
+/*
+ [withdraw] Processing for 300.0 2 seconds
+ [withdraw] Processing for 500.0 3 seconds
+ withdrawing 300.0 from account
+ Balance is 200.0
+ withdrawing 500.0 from account
+ Balance is -300.0
+*/
+~~~
+
+
+
+### 은행 출금문제 Solutions
+
+- Actor (section 12에서 알아보자)
+- NSLock 인스턴스의  lock(), unlock()을 통한 locking
+- concurrent queue 대신 serial queue를 사용하기
+
+~~~swift
+// MARK: - Section 11. Concurrent Programming: Problem and Solutions
+// MARK: 58. Problem: Bank Account Withdraw (은행 계좌 출금 문제)
+// MARK: 59. Solution 1: Bank Account Withdraw Using Serial Queue
+// MARK: 60. Solution 2: Bank Account Withdraw Using Locks(NSLock)
+  
+import UIKit
+
+class BankAccount {
+  var balance: Double
+  let lock = NSLock()
+  
+  init(balance: Double) {
+    self.balance = balance
+  }
+  
+  func withdraw(_ amount: Double) {
+    // NSLock을 통한 locking을 하면, 동시적 작업으로 인해 잔고가 minus가 되는것을 방지해준다. (하나의 스레드에 하나의 동작씩만 실행되도록 보장)
+    // lock() 사용 시, 반드시 unlock()을 직접 지정해주어야 하는 단점이 있다. 만약 까먹고 unlock()을 처리하지 않으면, 해당 스레드의 다음 작업이 매우 지연될 수 있다.
+    // -> 차선책으로 actor를 사용할 수 있다.
+    lock.lock()
+    if balance >= amount {
+      let processingTime = UInt32.random(in: 0...3) // 처리 시간은 1 ~ 3초로 동작
+      print("[withdraw] Processing for \(amount) \(processingTime) seconds")
+      sleep(processingTime) // 3초 후 amount만큼 출금을 시도
+      print("withdrawing \(amount) from account")
+      balance -= amount
+      print("Balance is \(balance)")
+    }
+    lock.unlock()
+  }
+}
+
+// Q. 만약 동시에 많은 요청이 오게 된다면??
+
+let bankAccount = BankAccount(balance: 500)
+// 작업을 concurrent하게 하지않고, serial하게 동작하면, 동시에 작업이 수행되는 일이 없기에 잔고가 -가 발생하지는 않는다.
+let queue = DispatchQueue(label: "Serial Queue")
+
+queue.async {
+  bankAccount.withdraw(300)
+}
+
+queue.async {
+  bankAccount.withdraw(500)
+}
+
+// concurrent 하게 다수의 출금 요청을 실행 시 잔고가 -가 되는 상황이 발생!!
+/*
+ [withdraw] Processing for 300.0 2 seconds
+ [withdraw] Processing for 500.0 3 seconds
+ withdrawing 300.0 from account
+ Balance is 200.0
+ withdrawing 500.0 from account
+ Balance is -300.0
+*/
+
+// serial 하게 실행하거나, NSLock()의 lock(), unlock()을 사용 시, 잔고가 -가 되는 문제는 해결이 됨.
+// -> 또다른 해결방법 => Actor를 Section 12에서 알아보자!!
+/*
+ [withdraw] Processing for 300.0 2 seconds
+ withdrawing 300.0 from account
+ Balance is 200.0
+ // 두번째 작업은 실행되지 않음. 출금이 불가능(출금할 amount가 잔고보다 큼)하기에
+*/
+~~~
+
+
+<br>
+
+
+## Section 12: What are Actors?
+
+
+
+protect mutable state, accessing Actor isolated states,  MainActor, Nonisolated instances
+
+- actor는 class와 유사하나, 상속이 불가능하다.
+- 하나의 스레드에서만 동작하여 data racing 문제를 방지할  수 있다.
+- 내부에 정의된 메서드는 await 키워드로 호출이 가능하며, 단기간에 다차례 반복 호출을 해도, 한번의 동작이 끝나야 그 다음 동작을 수행한다.
+
+~~~swift
+// MARK: - Section 12: What are Actors?
+// MARK: 63. Understanding Actors
+
+import SwiftUI
+
+// 1) class로 사용한다면
+/*
+class Counter {
+  var value: Int = 0
+  
+  func increment() -> Int {
+    value += 1
+    return value
+  }
+}
+// => concurrently 동작 시, 출력 순서가 보장되지 않음
+*/
+
+/*
+// 2) struct로 사용한다면
+struct Counter {
+  var value: Int = 0
+  
+  mutating func increment() -> Int {
+    value += 1
+    return value
+  }
+}
+// => concurrently 동작 시, 출력 순서가 보장되지 않음
+// 값 복사해서 호출할 경우, 1이 무수히 출력 됨..
+*/
+
+// 3) class, struct 대신 actor를 사용해보기
+// actor는 단 하나의 스레드에서만 동작하도록 보장해준다. 따라서 data racing 문제가 해결된다.
+actor Counter {
+  var value: Int = 0
+  // 하나의 스레드에서 한번에 하나의 동작만, 동작이 완료되면 suspended 다음 동작이 수행되므로 출력 순서가 보장
+  // actor 내의 methods는 await를 붙혀서 호출, 두개 이상의 스레드에서 한번에 동작하지 않음
+  func increment() -> Int {
+    value += 1
+    return value
+  }
+}
+
+struct ContentView: View {
+    var body: some View {
+      Button {
+        let counter = Counter()
+        // 1) 만약 concurrent 하게 동시에 increment가 발생한다면?
+        // 100까지 증가하면서 출력되는 것을 기대하고 아래코드를 실행한다면? => 카운팅 뒤죽박죽 순서로 출력이 됨... => concurrently 하게 동작하므로, 개별 작업들에 대한 시작은 순서대로 더라도, 완료되는 순서가 보장되지 않는다.
+        DispatchQueue.concurrentPerform(iterations: 100) { _ in
+          // 2) 아래처럼 struct상태 counter의 copy를 생성하고, increment()를 호출하면? -> 전부 값복사로 zero에서 시작하므로 1이 무수하게 출력됨.
+          // var counter = counter // struct를 사용하는 경우
+          // print(counter.increment())
+          // 3) actor를 사용해보자.
+          Task {
+            // await, try await 등은 Task 블럭 내부, .task viewModifier 내부 등(unstructured concurrency)에서 사용해야한다.
+            // => increment() 출력 결과, 순서가 보장된다!
+            print(await counter.increment())
+          }
+        }
+      } label: {
+        Text("Increment")
+      }
+    }
+}
+~~~
