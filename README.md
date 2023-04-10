@@ -203,6 +203,18 @@ func getPosts() async throws -> [Post] {
 ~~~
 
 
+## Inference of @MainActor
+Global actor-qualified wrappedValue를 갖고있는 propertyWrapper를 채택한 프러퍼티를 갖고있는 구조체 또는 클래스는 @MainActor로 추론됩니다.  
+초반부 색션에서 @StateObject의 사용과 @MainActor의 추론에 대한 의문이 있었는데, 위와같은 이유로 이해할수 있습니다.  
+
+<img width="900" alt="MainActor" src="https://user-images.githubusercontent.com/56178052/230912848-2f5d8e81-e8e4-477d-9f76-3e5e994fd383.png">  
+Reference: https://github.com/apple/swift-evolution/blob/main/proposals/0316-global-actors.md  
+
+<br/>
+<br/>
+
+
+
 
 ## Section 7: Project  Time: News App
 
