@@ -26,12 +26,17 @@ Udemy Study for Swift Concurrency
 - Section 6: Async/Await Using Continuation ~ Section 9: Download RandomImages and Quotes
 - 👩🏻‍💻 [applebuddy](https://github.com/applebuddy) | [ChoiYS](https://github.com/choi88andys) |  [Jae-eun](https://github.com/jae-eun) |  [JongHoooon](https://github.com/JongHoooon) | [Lim-YongKwan](https://github.com/lim-yongkwan)
 
-
 ### 3주차 스터디 (오프라인 😀)
 
 - 4/9(일), 오후 1시 ~ 3시
 - Section 9: Download RandomImages and Quotes ~ Section 12: What are Actors?
 - 👩🏻‍💻 [applebuddy](https://github.com/applebuddy) | [AppleCEO](https://github.com/appleceo) | [ChoiYS](https://github.com/choi88andys) |  [Jae-eun](https://github.com/jae-eun) |  [JongHoooon](https://github.com/JongHoooon) | [Lim-YongKwan](https://github.com/lim-yongkwan)
+
+### 4주차 스터디
+
+- 4/15(일), 오후 8시 ~ 10시
+- Section 12: What are Actors? ~ End of lecture
+- 👩🏻‍💻
 
 <br>
 
