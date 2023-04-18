@@ -35,8 +35,8 @@ Udemy Study for Swift Concurrency
 ### 4주차 스터디
 
 - 4/15(일), 오후 8시 ~ 10시
-- Section 12: What are Actors? ~ End of lecture
-- 👩🏻‍💻
+- Section 12: What are Actors? ~ End 🤗
+- 👩🏻‍💻 [applebuddy](https://github.com/applebuddy) | [AppleCEO](https://github.com/appleceo) | [ChoiYS](https://github.com/choi88andys) |  [Jae-eun](https://github.com/jae-eun) |  [JongHoooon](https://github.com/JongHoooon)
 
 
 ### 회고  
