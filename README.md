@@ -770,6 +770,60 @@ Task {
 }
 ~~~
 
+
+
+- AsyncThrowingStream 내에  Task.sleep()을 활용한 타이머 기능 구현방법
+  - 아래 코드처럼, continuation을 굳이 사용하지 않는 방식으로도 사용 가능, 계속 특정 작업을 하다가 nil을 반환하면 stream이 종료되도록 할 수 있음.
+
+~~~swift
+func countdown() async throws {
+    var countdown = 3
+    let counter = AsyncThrowingStream<String, Error> {
+        do {
+          	// 아래 처럼 1로 지연 작업을 주면서 Timer클래스 없이 Timer 기능을 구현 가능
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        } catch {
+            return nil
+        }
+        // 한번의 stream작업 블럭이 끝날때마다 countdown을 1씩 줄임
+        defer { countdown -= 1 }
+        
+        if countdown == 1 {
+          	// AsyncThrowingStream이므로, throw로 Error 던질 수도 있음 
+            throw NSError(domain: "error", code: 1)
+        }
+        
+        switch countdown {
+        case (1...): return "\(Date()) \(countdown)..."
+        case 0: return "\(Date()) 🎉 Hello"
+        default: return nil
+        }
+    }
+    
+    for try await count in counter {
+        print(count)
+    }
+}
+
+func run() {
+    Task {
+        do {
+            try await countdown()
+        } catch {
+            print(error)
+        }
+    }
+}
+
+/** Output
+2022-06-22 15:58:23 +0000 3...
+2022-06-22 15:58:24 +0000 2...
+Error Domain=error Code=1 "(null)"
+*/
+~~~
+
+
+
 <br>
 
 ## Section 11. Concurrent Programming: Problem and Solutions
@@ -985,4 +1039,138 @@ struct ContentView: View {
       }
     }
 }
+~~~
+
+
+
+## Actor example
+
+~~~swift
+// MARK: 65. Actors Example: Bank Account Transfer Funds
+// MARK: 66. Understanding nonisolated Keyword in Swift
+// actor 내에서 nonisolated keyword가 붙은 메서드는
+// - 내부에 변경코드를 작성할 수 없다. (변경하려고 하면 컴파일 에러가 발생한다.)
+// - 외부에서 사용할때 Task 블럭 내에 async/await 방식으로 사용할 필요가 없다. data racing 문제가 발생할 여지가 없기 때문이다.
+
+import SwiftUI
+
+enum BankError: Error {
+  case insufficientFunds(Double)
+}
+
+// 이번에도 BankAccount를 actor로 선언했다. 한번에 한번씩만 접근이 가능하다.
+// concurrent task로 공통의 자원을 병행적으로 읽거나 쓰는 문제인 data racing(race condition)을 방지해주며 내부의 메서드는 async/await 하게 동작해야 한다.
+actor BankAccount {
+  let accountNumber: Int
+  var balance: Double
+  
+  init(accountNumber: Int, balance: Double) {
+    self.accountNumber = accountNumber
+    self.balance = balance
+  }
+  
+  // getCurrentAPR은 고정된 값만 반환하지 내부에서 변경이 일어나는 메서드는 아니다.
+  // 따라서 Data racing이 발생할 일이 없다. 이런 경우에는 앞에 nonisolated를 붙혀서 actor가 아닌 struct, class 메서드처럼 호출해서 사용할 수 있다.
+  // => nonisolated func : "야 이거 race condition 발생할 일 없는 놈이야 async/await call 방식을 취할 필요가 없어!"
+  nonisolated func getCurrentAPR() -> Double {
+    // nonisolated func은 내부에 변경 코드를 허용하지 않는다.
+    // * 경고 내용 : Actor-isolated property 'balance' can not be mutated from a non-isolated context
+    // balance += 10
+    return 0.2
+  }
+  
+  // 반환부 앞에 async를 붙혀도 안붙혀도 외부에서는 await을 붙혀서 사용해야한다. actor 메서드니까.
+  func deposit(_ amount: Double) {
+    balance += amount
+  }
+  
+  func transfer(amount: Double, to other: BankAccount) async throws {
+    if amount > balance {
+      throw BankError.insufficientFunds(amount)
+    }
+    
+    balance -= amount
+    // other는 actor(BankAccount)이다. 따라서 deposit 메서드 동작을 위해 await를 붙인다.
+    await other.deposit(amount)
+    // other의 모든 멤버가 await으로 사용되는건 아니다. accountNumber는 상수이므로 await 없이도 동작이 가능하다.
+    print(other.accountNumber)
+    print("Current Account: \(balance), Other Account: \(await other.balance)")
+  }
+}
+
+struct ContentView: View {
+  var body: some View {
+    Button {
+      
+      let bankAccount = BankAccount(accountNumber: 123, balance: 500)
+      let otherAccount = BankAccount(accountNumber: 456, balance: 100)
+      
+      // getCurrentAPR()은 actor method임에도 nonisolated func이므로, async/await하게 사용하지 않아도 된다.
+      let _ = bankAccount.getCurrentAPR() // await, try await 등의 예약어가 붙지 않는 모습. nonisolated property이기 땜.
+      // 은행 잔고 출금을 concurrent하게 진행하는데, 완료 시점이 뒤죽박죽이 된다면? 의도치 않은 사고가 발생할 수 있다!
+      DispatchQueue.concurrentPerform(iterations: 100) { _ in
+        Task {
+          try? await bankAccount.transfer(amount: 300, to: otherAccount)
+        }
+      }
+    } label: {
+      Text("Transfer")
+    }
+  }
+}
+~~~
+
+
+
+### Actor with protocol practice
+
+~~~swift
+import SwiftUI
+
+protocol Human {
+  associatedtype Food
+  var food: Food { get set }
+  
+  func eat(food: Food)
+}
+
+class Baby: Human {
+  // 아래처럼 Food associatedtype의 타입을 정의할수도 있지만 관련 멤버들의 타입을 통해 타입을 추론하는 방식으로 사용도 됨
+  // Human protocol의 필수 구현 메서드, eat에서 food 타입인 Food를 String타입으로 사용했기에 이를 타입 추론하여 Food 타입을 String으로 인식함
+  // typealias Food = String
+  var food: String
+  
+  init(food: String) {
+    self.food = food
+  }
+
+  func eat(food: String) {
+    print(food)
+  }
+}
+
+protocol ActorMan {
+  associatedtype Food
+  var food: Food { get }
+}
+
+actor ActMan: ActorMan {
+  typealias Food = String
+  // food는 data racing, race condition이 발생할 가능성이 전혀 없는 놈이라 nonisolated 로 선언해서 외부에서는 async/await 방식으로 사용 안해도 된다.
+  // constant는 상수이므로, actor 멤버이지만 nonisolated 명시 안해도 외부에서 await으로 사용할 필요가 없음
+  let constant = "hahhaa"
+  // 변경 가능성이 없는 아래와 같은 getter 프로퍼티는 nonisolated 명시를 통해 외부에서 await 하게 사용할 필요 없도록 할 수 있음
+  nonisolated var food: String {
+    return "apple"
+  }
+  
+  init() {}
+}
+
+let baby = Baby(food: "apple")
+baby.eat(food: "human")
+
+let actorMan = ActMan()
+print(actorMan.constant)
+print(actorMan.food)
 ~~~
